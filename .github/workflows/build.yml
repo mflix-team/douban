@@ -19,10 +19,8 @@ jobs:
         include:
           - os: macos-latest
             artifact_name: douban-macos
-            binary: douban
           - os: windows-latest
             artifact_name: douban-windows
-            binary: douban.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -35,11 +33,51 @@ jobs:
       - name: Release 构建
         run: cargo build --release --locked
 
-      - name: 上传构建产物
+      - name: 打包 macOS 通用二进制 (.app)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          # 显式构建 arm64 与 x86_64 两个目标，合并为通用(universal)二进制，
+          # 不依赖 runner 自身架构
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create -output douban-universal \
+            target/aarch64-apple-darwin/release/douban \
+            target/x86_64-apple-darwin/release/douban
+
+          # 组装 .app 应用包
+          APP=douban.app
+          mkdir -p "$APP/Contents/MacOS"
+          cp douban-universal "$APP/Contents/MacOS/douban"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleName string douban" \
+            -c "Add :CFBundleDisplayName string 豆瓣信息查询" \
+            -c "Add :CFBundleIdentifier string com.mflix.douban" \
+            -c "Add :CFBundleVersion string ${GITHUB_REF_NAME#v}" \
+            -c "Add :CFBundleShortVersionString string ${GITHUB_REF_NAME#v}" \
+            -c "Add :CFBundlePackageType string APPL" \
+            -c "Add :CFBundleExecutable string douban" \
+            -c "Add :NSHighResolutionCapable bool true" \
+            -c "Add :LSMinimumSystemVersion string 10.15" \
+            "$APP/Contents/Info.plist"
+          printf 'APPL????' > "$APP/Contents/PkgInfo"
+          # 压缩为 zip 以便作为 Release 附件分发
+          zip -rq douban-macos.zip "$APP"
+
+      - name: 上传构建产物 (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: target/release/${{ matrix.binary }}
+          path: target/release/douban.exe
+
+      - name: 上传构建产物 (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: douban-macos.zip
 
   release:
     name: 发布 GitHub Release
