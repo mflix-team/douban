@@ -1,0 +1,56 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: douban-macos
+            binary: douban
+          - os: windows-latest
+            artifact_name: douban-windows
+            binary: douban.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 依赖
+        uses: Swatinem/rust-cache@v2
+
+      - name: Release 构建
+        run: cargo build --release --locked
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/release/${{ matrix.binary }}
+
+  release:
+    name: 发布 GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载双平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true

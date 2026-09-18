@@ -12,15 +12,13 @@
 import sys
 import time
 import requests
-from scrapy.selector import Selector
 import timeit
-import re
 
 
 headers = {
-    "Accept": "",
-    "User-Agent": "",
-    "Cookie": "",
+    "Accept": "*/*",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36",
+    "Referer": "https://m.douban.com/",
 }
 
 
@@ -40,100 +38,90 @@ def main():
     print("END %ss" % round((end-start), 2))
 
 
+# 从豆瓣抓取条目信息，返回 dict
+def fetch_subject(subject_id, timeout=15):
+    # 移动端 API（电影/剧集通用，无需登录）
+    api_url = "https://m.douban.com/rexxar/api/v2/movie/%s" % subject_id
+    response = requests.get(api_url, headers=headers, timeout=timeout)
+    if response.status_code != 200:
+        raise ValueError("mobile api status %s" % response.status_code)
+    raw = response.json()
+
+    resource_type = "tv" if raw.get("is_tv") else "movie"
+    rating_num = (raw.get("rating") or {}).get("value") or 0
+    title = raw.get("title", "")
+    year = raw.get("year", "") or ""
+    cover = (raw.get("pic") or {}).get("large") or ""
+    directors = ", ".join(d.get("name", "") for d in (raw.get("directors") or []))
+    summary = (raw.get("intro") or "").replace("\n", "").replace(" ", "")
+
+    actors = [a.get("name", "") for a in (raw.get("actors") or [])]
+    writers = []
+
+    # 编剧不在主接口，从 credits 演职员表提取（roles 包含"编剧"）
+    credits_url = "https://m.douban.com/rexxar/api/v2/movie/%s/credits" % subject_id
+    try:
+        credits = requests.get(credits_url, headers=headers, timeout=timeout).json()
+        for item in (credits.get("items") or []):
+            if "编剧" in (item.get("roles") or []):
+                writers.append(item.get("name", ""))
+            if not actors and ("演员" in (item.get("roles") or []) or "饰" in (item.get("character") or "")):
+                actors.append(item.get("name", ""))
+    except Exception:
+        pass
+
+    actors = list(dict.fromkeys(actors))
+    writers = ", ".join(dict.fromkeys(writers))
+    actors_str = ", ".join(actors)
+
+    genres = raw.get("genres") or []
+    releases = raw.get("pubdate") or []
+    runtime = " ".join(raw.get("durations") or []) if raw.get("durations") else ""
+    translation = " ".join(raw.get("aka") or []) if raw.get("aka") else ""
+
+    if isinstance(genres, str):
+        genres = [genres]
+    if isinstance(releases, str):
+        releases = [releases]
+
+    return {
+        "id": subject_id,
+        "resource_type": resource_type,
+        "rating_num": rating_num,
+        "title": title,
+        "year": year,
+        "cover": cover,
+        "genres": genres,
+        "director": directors,
+        "writers": writers,
+        "actors": actors_str,
+        "summary": summary,
+        "releases": releases,
+        "runtime": runtime,
+        "translation": translation,
+    }
+
+
 # 获取网页内容并解析
 def get_html(id):
     url = "https://movie.douban.com/subject/"+id
     print("START GET %s DATA." % url)
     try:
-        response = requests.get(url, headers=headers)
-        selector = Selector(
-            text=Selector(text=response.text).
-            css(u'#content').
-            extract_first()
-        )
-        resource_type = "movie"
-        if selector.css(u'#season').extract_first() != None:
-            resource_type = "tv"
-        rating_num = selector.css(u'.rating_num ::text').extract_first()
-        if rating_num == None:
-            rating_num = 0
-        print("RATING NUM: %s" % rating_num)
-        h1s = selector.css(u'h1 span::text').extract()
-        title = h1s[0]
-        year = ""
-        if (len(h1s) > 1):
-            year = h1s[1]
-            year = year.replace("(", "").replace(")", "")
-        print("TITLE: %s" % title)
-        print("YEAR: %s" % year)
-        cover = selector.css(u'#mainpic img::attr(src)').extract_first()
-        print("COVER: %s" % cover)
-        attrs = selector.css(u'.attrs').extract()
-        directors = Selector(text=attrs[0]).css(u'::text').extract()
-        directors = ''.join(directors)
-        print("DIRECTORS: %s" % directors)
-        writers = Selector(text=attrs[1]).css(u'::text').extract()
-        writers = ''.join(writers)
-        print("WRITERS: %s" % writers)
-        actors = Selector(text=attrs[2]).css(u'::text').extract()
-        actors = ''.join(actors)
-        print("ACTORS: %s" % actors)
-
-        summary = selector.css(u'#link-report span::text').extract()
-        summary = ''.join(summary)
-        summary = summary.replace(' ', '')
-        print("SUMMARY: %s" % summary)
-
-        releases = []
-        runtime = ""
-        translation = ""
-        spans = selector.css(u'span').extract()
-        genres = []
-        for span in spans:
-            ss = Selector(text=span)
-            if ss.css(u'::attr(property)').extract_first() == "v:genre":
-                genres.append(ss.css(u'::text').extract_first())
-            elif ss.css(u'::attr(property)').extract_first() == "v:initialReleaseDate":
-                releases.append(ss.css(u'::text').extract_first())
-        print("RELEASES: %s" % releases)
-        r = re.findall(u"片长:(([\s\S]*?))又名", response.text)
-        if r != None and len(r) > 0:
-            r = r[0][0]
-            r = r.replace("\n", "").replace("  ", "")
-            runtime = "".join(Selector(text=r).css(u"::text").extract())
-        print("RUNTIME: %s" % runtime)
-        r = re.findall(u"又名:(([\s\S]*?))IMDb", response.text)
-        if r != None and len(r) > 0:
-            r = r[0][0]
-            r = r.replace("\n", "").replace("  ", "")
-            translation = "".join(Selector(text=r).css(u"::text").extract())
-
-        print("TRANSLATION: %s" % translation)
-        print("TRANSLATION: %s" % translation)
-        if isinstance(genres, str):
-            genres = [genres]
-        if isinstance(releases, str):
-            releases = [releases]
-
-        data = {
-            "id": id,
-            "resource_type": resource_type,
-            "rating_num": rating_num,
-            "title": title,
-            "year": year,
-            "cover": cover,
-            "genres": genres,
-            "director": directors,
-            "writers": writers,
-            "actors": actors,
-            "summary": summary,
-            "releases": releases,
-            "runtime": runtime,
-            "translation": translation,
-        }
+        data = fetch_subject(id)
+        print("RATING NUM: %s" % data["rating_num"])
+        print("TITLE: %s" % data["title"])
+        print("YEAR: %s" % data["year"])
+        print("COVER: %s" % data["cover"])
+        print("DIRECTORS: %s" % data["director"])
+        print("WRITERS: %s" % data["writers"])
+        print("ACTORS: %s" % data["actors"])
+        print("SUMMARY: %s" % data["summary"])
+        print("RELEASES: %s" % data["releases"])
+        print("RUNTIME: %s" % data["runtime"])
+        print("TRANSLATION: %s" % data["translation"])
         print("DATA: %s" % data)
-    except:
-        print("UNKNOW ERROR, PLEASE RETRY")
+    except Exception as e:
+        print("UNKNOW ERROR: %s" % e)
 
 
 if __name__ == "__main__":
